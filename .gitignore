@@ -1,0 +1,25 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# SQLite database (use environment variables or a cloud database in production)
+*.db
+
+# Node.js dependencies (if applicable)
+node_modules/
+
+# IDE-specific files
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Environment variables
+.env
+.vercel
