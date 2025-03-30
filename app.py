@@ -10,6 +10,9 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text, select
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pathlib import Path
 
 import google.generativeai as genai
 import uuid
@@ -36,7 +39,9 @@ logger = logging.getLogger("SpiderCareBackend")
 # Load Gemini API Key from .env and configure Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise ValueError("Missing Google Gemini API key. Set it in environment variables.")
+    logger.warning("Missing Google Gemini API key. Set it in environment variables.")
+    GEMINI_API_KEY = "dummy_key_for_development"
+    
 logger.info("Gemini API Key loaded successfully.")
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -46,10 +51,17 @@ app = FastAPI(
     description="Backend for SpiderCare mental health chatbot."
 )
 
+# Create templates directory if it doesn't exist
+templates_path = Path("templates")
+templates_path.mkdir(exist_ok=True)
+
+# Initialize Jinja2Templates
+templates = Jinja2Templates(directory="templates")
+
 # CORS middleware for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5000"],
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,9 +91,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
 
-@app.get("/")
-async def read_root():
-    return {"message": "SpiderCare backend is up and running!"}
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 class VerificationRequest(BaseModel):
     email: EmailStr
@@ -94,6 +106,9 @@ class UserRegistration(BaseModel):
     email: EmailStr
     username: str
     password: str
+
+# Store verification codes temporarily (in production, use Redis or a database)
+verification_codes = {}
 
 @app.post("/send-verification")
 async def send_verification(request: VerificationRequest, db: Session = Depends(get_db)):
@@ -284,9 +299,14 @@ async def chat(
 
     logger.info(f"Processing chat for conversation: {conversation_id}")
     
-    model = genai.GenerativeModel("gemini-1.5-flash-8b")
-    response = model.generate_content(full_context)
-    response_text = response.text
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash-8b")
+        response = model.generate_content(full_context)
+        response_text = response.text
+    except Exception as e:
+        logger.error(f"Error generating response with Gemini: {str(e)}")
+        # Fallback response if API fails
+        response_text = "I'm having trouble connecting right now. Please try again in a moment."
     
     # Save the conversation
     conv = Conversation(
@@ -446,74 +466,6 @@ async def update_conversation_title(
     
     return {"message": "Title updated successfully"}
 
-# Mount the static files directory
-app.mount("/icons", StaticFiles(directory="static/icons"), name="icons")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Store verification codes temporarily (in production, use Redis or a database)
-verification_codes = {}
-
-def validate_password(password: str) -> tuple[bool, str]:
-    """
-    Validate password strength
-    Returns (is_valid, message)
-    """
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long"
-    if not any(c.isupper() for c in password):
-        return False, "Password must contain at least one uppercase letter"
-    if not any(c.islower() for c in password):
-        return False, "Password must contain at least one lowercase letter"
-    if not any(c.isdigit() for c in password):
-        return False, "Password must contain at least one number"
-    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
-        return False, "Password must contain at least one special character"
-    return True, "Password is strong"
-
-# Email configuration
-EMAIL_ADDRESS = "tathesrushti@gmail.com"
-EMAIL_PASSWORD = "zceq cuvi yqyu zkad"
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-
-def send_email(to_email: str, code: str):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_ADDRESS
-    msg['To'] = to_email
-    msg['Subject'] = "SpiderCare - Verify Your Email"
-
-    body = f"""
-    <html>
-    <body style="font-family: Arial, sans-serif; color: #333;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h1 style="color: #ff0000;">Welcome to SpiderCare! 🕷️</h1>
-            <p>Your verification code is:</p>
-            <h2 style="color: #ff0000; font-size: 32px; letter-spacing: 5px; text-align: center; padding: 20px;">
-                {code}
-            </h2>
-            <p>Enter this code to complete your registration.</p>
-            <p>If you didn't request this code, please ignore this email.</p>
-            <p style="color: #666; font-size: 12px; margin-top: 30px;">
-                - Your friendly neighborhood SpiderCare team
-            </p>
-        </div>
-    </body>
-    </html>
-    """
-
-    msg.attach(MIMEText(body, 'html'))
-
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"Failed to send email: {e}")
-        return False
-
 @app.get("/user/profile")
 async def get_user_profile(current_user: User = Depends(get_current_user)):
     try:
@@ -559,3 +511,68 @@ async def update_password(
     current_user.hashed_password = get_password_hash(data.get("new_password"))
     db.commit()
     return {"status": "success"}
+
+# Mount the static files directory last to avoid conflicts with API routes
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/icons", StaticFiles(directory="static/icons"), name="icons")
+
+def validate_password(password: str) -> tuple[bool, str]:
+    """
+    Validate password strength
+    Returns (is_valid, message)
+    """
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter"
+    if not any(c.islower() for c in password):
+        return False, "Password must contain at least one lowercase letter"
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one number"
+    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
+        return False, "Password must contain at least one special character"
+    return True, "Password is strong"
+
+# Email configuration
+EMAIL_ADDRESS = "tathesrushti@gmail.com"
+EMAIL_PASSWORD = "zceq cuvi yqyu zkad"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def send_email(to_email: str, code: str):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = to_email
+        msg['Subject'] = "SpiderCare - Verify Your Email"
+
+        body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #ff0000;">Welcome to SpiderCare! 🕷️</h1>
+                <p>Your verification code is:</p>
+                <h2 style="color: #ff0000; font-size: 32px; letter-spacing: 5px; text-align: center; padding: 20px;">
+                    {code}
+                </h2>
+                <p>Enter this code to complete your registration.</p>
+                <p>If you didn't request this code, please ignore this email.</p>
+                <p style="color: #666; font-size: 12px; margin-top: 30px;">
+                    - Your friendly neighborhood SpiderCare team
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(body, 'html'))
+
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return False
