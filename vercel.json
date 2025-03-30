@@ -1,15 +1,19 @@
 {
-    "version": 2,
-    "builds": [
-      {
-        "src": "server.js",
-        "use": "@vercel/node"
-      }
-    ],
-    "routes": [
-      {
-        "src": "/(.*)",
-        "dest": "server.js"
-      }
-    ]
-  }
+  "version": 2,
+  "builds": [
+    {
+      "src": "vercel_app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "vercel_app.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "vercel_app.py"
+    }
+  ]
+}
